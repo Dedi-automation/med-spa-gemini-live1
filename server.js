@@ -3,14 +3,13 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { WebSocketServer } from 'ws';
-import { GoogleGenAI, Modality } from '@google/genai';
+import WebSocket, { WebSocketServer } from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-live-extended-thinking';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-live';
 const VOICE = process.env.GEMINI_VOICE || 'Aoede';
 
 if (!API_KEY) {
@@ -32,92 +31,166 @@ Rules:
 - Do not quote exact prices; say pricing depends on the treatment plan and is covered in the free consultation.
 - If you don't know something, say you'll have a team member follow up.`;
 
-const ai = new GoogleGenAI({ apiKey: API_KEY });
-
 const app = express();
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/health', (_req, res) => res.json({ ok: true, model: MODEL }));
+app.get('/health', (_req, res) => res.json({ ok: true, model: GEMINI_MODEL }));
+app.get('/test', (_req, res) => res.sendFile(path.join(__dirname, 'test.html')));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/live' });
 
-// Each browser connection gets its own Gemini Live session.
-// Browser -> server: binary frames of 16 kHz mono PCM16, or JSON control messages.
-// Server -> browser: JSON messages (audio is base64 24 kHz mono PCM16).
-wss.on('connection', async (client) => {
-  const send = (msg) => {
-    if (client.readyState === client.OPEN) client.send(JSON.stringify(msg));
+// Helper to handle the async connection lifecycle safely
+function connectToGemini() {
+  return new Promise((resolve, reject) => {
+    // FIXED: Added the required "/ws/" path segment
+    const geminiUrl = `wss://://googleapis.com{API_KEY}`;
+    const geminiWs = new WebSocket(geminiUrl);
+
+    geminiWs.on('open', () => {
+      const setupMessage = {
+        setup: {
+          model: `models/${GEMINI_MODEL}`,
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: VOICE
+                }
+              }
+            }
+          },
+          systemInstruction: {
+            parts: [{ text: SYSTEM_PROMPT }]
+          }
+        }
+      };
+      geminiWs.send(JSON.stringify(setupMessage));
+      resolve(geminiWs);
+    });
+
+    geminiWs.on('error', (err) => {
+      reject(err);
+    });
+
+    setTimeout(() => reject(new Error('Gemini connection handshake timed out')), 8000);
+  });
+}
+
+wss.on('connection', async (clientWs) => {
+  let geminiWs = null;
+
+  const sendToClient = (msg) => {
+    if (clientWs.readyState === clientWs.OPEN) {
+      clientWs.send(JSON.stringify(msg));
+    }
   };
 
-  let session;
   try {
-    session = await ai.live.connect({
-      model: MODEL,
-      config: {
-        responseModalities: [Modality.AUDIO],
-        systemInstruction: SYSTEM_PROMPT,
-        speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE } },
-        },
-        inputAudioTranscription: {},
-        outputAudioTranscription: {},
-      },
-      callbacks: {
-        onopen: () => send({ type: 'ready' }),
-        onmessage: (msg) => {
-          const content = msg.serverContent;
-          if (!content) return;
+    // Block execution until Gemini connection is active and configured
+    geminiWs = await connectToGemini();
+    sendToClient({ type: 'ready' });
 
-          for (const part of content.modelTurn?.parts ?? []) {
-            if (part.inlineData?.data) send({ type: 'audio', data: part.inlineData.data });
+    geminiWs.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data);
+        
+        if (msg.serverContent?.modelTurn?.parts) {
+          for (const part of msg.serverContent.modelTurn.parts) {
+            if (part.inlineData?.data) {
+              sendToClient({ type: 'audio', data: part.inlineData.data });
+            }
           }
-          if (content.inputTranscription?.text) {
-            send({ type: 'transcript', role: 'user', text: content.inputTranscription.text });
+        }
+
+        if (msg.serverContent?.userTurn?.parts) {
+          for (const part of msg.serverContent.userTurn.parts) {
+            if (part.text) {
+              sendToClient({ type: 'transcript', role: 'user', text: part.text });
+            }
           }
-          if (content.outputTranscription?.text) {
-            send({ type: 'transcript', role: 'lily', text: content.outputTranscription.text });
+        }
+
+        if (msg.serverContent?.modelTurn?.parts) {
+          for (const part of msg.serverContent.modelTurn.parts) {
+            if (part.text) {
+              sendToClient({ type: 'transcript', role: 'lily', text: part.text });
+            }
           }
-          if (content.interrupted) send({ type: 'interrupted' });
-          if (content.turnComplete) send({ type: 'turnComplete' });
-        },
-        onerror: (e) => {
-          console.error('Gemini error:', e.message);
-          send({ type: 'error', message: e.message });
-        },
-        onclose: (e) => {
-          console.log('Gemini session closed:', e.reason || e.code);
-          send({ type: 'closed', reason: e.reason });
-          client.close();
-        },
-      },
+        }
+
+        if (msg.serverContent?.turnComplete) {
+          sendToClient({ type: 'turnComplete' });
+        }
+      } catch (err) {
+        console.error('Error processing Gemini payload:', err.message);
+      }
     });
+
+    geminiWs.on('error', (err) => {
+      console.error('Gemini connection error:', err.message);
+      sendToClient({ type: 'error', message: err.message });
+    });
+
+    geminiWs.on('close', () => {
+      if (clientWs.readyState === clientWs.OPEN) {
+        clientWs.close();
+      }
+    });
+
   } catch (err) {
-    console.error('Failed to connect to Gemini Live:', err.message);
-    send({ type: 'error', message: `Could not connect to Gemini: ${err.message}` });
-    client.close();
+    console.error('Failed initialization:', err.message);
+    sendToClient({ type: 'error', message: `Could not connect to Google backend: ${err.message}` });
+    clientWs.close();
     return;
   }
 
-  client.on('message', (data, isBinary) => {
+  // Listens to client frames only after geminiWs is verified ready
+  clientWs.on('message', (data, isBinary) => {
+    if (!geminiWs || geminiWs.readyState !== geminiWs.OPEN) return;
+
     if (isBinary) {
-      session.sendRealtimeInput({
-        audio: { data: Buffer.from(data).toString('base64'), mimeType: 'audio/pcm;rate=16000' },
-      });
-      return;
+      const audioMessage = {
+        realtimeInput: {
+          mediaChunks: [
+            {
+              data: Buffer.from(data).toString('base64'),
+              mimeType: 'audio/pcm;rate=16000'
+            }
+          ]
+        }
+      };
+      geminiWs.send(JSON.stringify(audioMessage));
+    } else {
+      try {
+        const msg = JSON.parse(data);
+        if (msg.type === 'text' && msg.text) {
+          const textMessage = {
+            clientContent: {
+              turns: [
+                {
+                  role: 'user',
+                  parts: [{ text: msg.text }]
+                }
+              ],
+              turnComplete: true
+            }
+          };
+          geminiWs.send(JSON.stringify(textMessage));
+        }
+      } catch (err) {
+        console.error('Malformed text frame payload:', err.message);
+      }
     }
-    let msg;
-    try {
-      msg = JSON.parse(data.toString());
-    } catch {
-      return;
-    }
-    if (msg.type === 'audioStreamEnd') session.sendRealtimeInput({ audioStreamEnd: true });
-    if (msg.type === 'text' && msg.text) session.sendRealtimeInput({ text: msg.text });
   });
 
-  client.on('close', () => session.close());
+  clientWs.on('close', () => {
+    if (geminiWs && geminiWs.readyState === geminiWs.OPEN) {
+      geminiWs.close();
+    }
+  });
 });
 
 server.listen(PORT, () => {
-  console.log(`Lily is listening at http://localhost:${PORT} (model: ${MODEL})`);
+  console.log(`Lily is listening at http://localhost:${PORT} (model: ${GEMINI_MODEL})`);
 });
