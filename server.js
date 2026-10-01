@@ -3,17 +3,18 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import WebSocket, { WebSocketServer } from 'ws';
+import { WebSocketServer } from 'ws';
+import { GoogleGenerativeAI } from '@google/genai';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-live';
+const MODEL = 'gemini-3.8-live'; // Native audio WebSocket
 const VOICE = process.env.GEMINI_VOICE || 'Aoede';
 
 if (!API_KEY) {
-  console.error('Missing GEMINI_API_KEY. Copy .env.example to .env and add your key.');
+  console.error('Missing GEMINI_API_KEY in .env');
   process.exit(1);
 }
 
@@ -32,165 +33,127 @@ Rules:
 - If you don't know something, say you'll have a team member follow up.`;
 
 const app = express();
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/health', (_req, res) => res.json({ ok: true, model: GEMINI_MODEL }));
-app.get('/test', (_req, res) => res.sendFile(path.join(__dirname, 'test.html')));
+app.use(express.static('public'));
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/live' });
+const wss = new WebSocketServer({ server });
 
-// Helper to handle the async connection lifecycle safely
-function connectToGemini() {
-  return new Promise((resolve, reject) => {
-    // FIXED: Added the required "/ws/" path segment
-    const geminiUrl = `wss://://googleapis.com{API_KEY}`;
-    const geminiWs = new WebSocket(geminiUrl);
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index-3.8-live.html')));
+app.get('/health', (_req, res) => res.json({ ok: true, model: MODEL }));
 
-    geminiWs.on('open', () => {
-      const setupMessage = {
-        setup: {
-          model: `models/${GEMINI_MODEL}`,
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: VOICE
-                }
-              }
-            }
-          },
-          systemInstruction: {
-            parts: [{ text: SYSTEM_PROMPT }]
-          }
-        }
-      };
-      geminiWs.send(JSON.stringify(setupMessage));
-      resolve(geminiWs);
-    });
-
-    geminiWs.on('error', (err) => {
-      reject(err);
-    });
-
-    setTimeout(() => reject(new Error('Gemini connection handshake timed out')), 8000);
-  });
-}
-
-wss.on('connection', async (clientWs) => {
+// Gemini 3.8 Live WebSocket handler
+wss.on('connection', async (browserWs) => {
+  console.log(`🤖 Browser connected`);
+  
+  const ai = new GoogleGenerativeAI({ apiKey: API_KEY });
+  const model = ai.getGenerativeModel({ model: MODEL });
+  
   let geminiWs = null;
-
-  const sendToClient = (msg) => {
-    if (clientWs.readyState === clientWs.OPEN) {
-      clientWs.send(JSON.stringify(msg));
-    }
-  };
+  let callStartTime = Date.now();
+  let inputTokens = 0;
+  let outputTokens = 0;
 
   try {
-    // Block execution until Gemini connection is active and configured
-    geminiWs = await connectToGemini();
-    sendToClient({ type: 'ready' });
-
-    geminiWs.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data);
-        
-        if (msg.serverContent?.modelTurn?.parts) {
-          for (const part of msg.serverContent.modelTurn.parts) {
-            if (part.inlineData?.data) {
-              sendToClient({ type: 'audio', data: part.inlineData.data });
-            }
-          }
-        }
-
-        if (msg.serverContent?.userTurn?.parts) {
-          for (const part of msg.serverContent.userTurn.parts) {
-            if (part.text) {
-              sendToClient({ type: 'transcript', role: 'user', text: part.text });
-            }
-          }
-        }
-
-        if (msg.serverContent?.modelTurn?.parts) {
-          for (const part of msg.serverContent.modelTurn.parts) {
-            if (part.text) {
-              sendToClient({ type: 'transcript', role: 'lily', text: part.text });
-            }
-          }
-        }
-
-        if (msg.serverContent?.turnComplete) {
-          sendToClient({ type: 'turnComplete' });
-        }
-      } catch (err) {
-        console.error('Error processing Gemini payload:', err.message);
-      }
+    // Use Gemini Live API with system prompt
+    geminiWs = await model.startSession({
+      systemInstruction: SYSTEM_PROMPT,
+      generationConfig: {
+        temperature: 0.9,
+        topP: 1,
+        topK: 40,
+      },
     });
 
-    geminiWs.on('error', (err) => {
-      console.error('Gemini connection error:', err.message);
-      sendToClient({ type: 'error', message: err.message });
-    });
+    console.log('✅ Connected to Gemini 3.8 Live');
 
-    geminiWs.on('close', () => {
-      if (clientWs.readyState === clientWs.OPEN) {
-        clientWs.close();
+    // Send initial greeting from Lily
+    browserWs.send(JSON.stringify({
+      type: 'transcript',
+      speaker: 'bot',
+      text: 'Good afternoon. This is Lily from Glow Med Spa. How can I help you today?',
+    }));
+
+    // Relay audio from browser → Gemini
+    browserWs.on('message', async (data) => {
+      if (data instanceof ArrayBuffer) {
+        // Audio chunk from browser (PCM)
+        try {
+          const response = await geminiWs.sendMessage({
+            parts: [
+              {
+                inlineData: {
+                  mimeType: 'audio/pcm',
+                  data: Buffer.from(data).toString('base64'),
+                },
+              },
+            ],
+          });
+
+          // Extract audio output from response
+          const content = response.candidates?.[0]?.content;
+          if (content) {
+            for (const part of content.parts || []) {
+              // Audio output from Gemini
+              if (part.inlineData?.data) {
+                browserWs.send(JSON.stringify({
+                  type: 'audio',
+                  data: part.inlineData.data,
+                }));
+              }
+              // Text transcript
+              if (part.text) {
+                browserWs.send(JSON.stringify({
+                  type: 'transcript',
+                  speaker: 'bot',
+                  text: part.text,
+                }));
+              }
+            }
+          }
+
+          // Track token usage
+          if (response.usageMetadata) {
+            inputTokens += response.usageMetadata.promptTokenCount || 0;
+            outputTokens += response.usageMetadata.candidatesTokenCount || 0;
+          }
+        } catch (err) {
+          console.error('Error processing audio:', err);
+          browserWs.send(JSON.stringify({
+            type: 'error',
+            message: 'Error processing audio',
+          }));
+        }
       }
     });
 
   } catch (err) {
-    console.error('Failed initialization:', err.message);
-    sendToClient({ type: 'error', message: `Could not connect to Google backend: ${err.message}` });
-    clientWs.close();
-    return;
+    console.error('🔴 Gemini 3.8 Live connection error:', err.message);
+    browserWs.send(JSON.stringify({
+      type: 'error',
+      message: `Failed to connect to Gemini: ${err.message}`,
+    }));
+    browserWs.close();
   }
 
-  // Listens to client frames only after geminiWs is verified ready
-  clientWs.on('message', (data, isBinary) => {
-    if (!geminiWs || geminiWs.readyState !== geminiWs.OPEN) return;
+  browserWs.on('close', () => {
+    console.log('📱 Browser disconnected');
 
-    if (isBinary) {
-      const audioMessage = {
-        realtimeInput: {
-          mediaChunks: [
-            {
-              data: Buffer.from(data).toString('base64'),
-              mimeType: 'audio/pcm;rate=16000'
-            }
-          ]
-        }
-      };
-      geminiWs.send(JSON.stringify(audioMessage));
-    } else {
-      try {
-        const msg = JSON.parse(data);
-        if (msg.type === 'text' && msg.text) {
-          const textMessage = {
-            clientContent: {
-              turns: [
-                {
-                  role: 'user',
-                  parts: [{ text: msg.text }]
-                }
-              ],
-              turnComplete: true
-            }
-          };
-          geminiWs.send(JSON.stringify(textMessage));
-        }
-      } catch (err) {
-        console.error('Malformed text frame payload:', err.message);
-      }
-    }
-  });
+    // Calculate costs
+    const durationSeconds = (Date.now() - callStartTime) / 1000;
+    const inputCost = (inputTokens / 1_000_000) * 3.00; // $3.00/M input tokens
+    const outputCost = (outputTokens / 1_000_000) * 12.00; // $12.00/M output tokens
+    const totalCost = inputCost + outputCost;
 
-  clientWs.on('close', () => {
-    if (geminiWs && geminiWs.readyState === geminiWs.OPEN) {
-      geminiWs.close();
-    }
+    console.log(`📊 Call Summary:`);
+    console.log(`  Duration: ${Math.round(durationSeconds)}s`);
+    console.log(`  Input tokens: ${inputTokens} ($${inputCost.toFixed(4)})`);
+    console.log(`  Output tokens: ${outputTokens} ($${outputCost.toFixed(4)})`);
+    console.log(`  Total cost: $${totalCost.toFixed(4)}`);
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`Lily is listening at http://localhost:${PORT} (model: ${GEMINI_MODEL})`);
+  console.log(`🎤 Lily (Gemini 3.8 Live) listening at http://localhost:${PORT}`);
+  console.log(`Model: ${MODEL}`);
+  console.log(`Pricing: $3.00/M input tokens, $12.00/M output tokens (~$1.38/hr blended)`);
 });

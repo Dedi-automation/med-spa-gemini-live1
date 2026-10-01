@@ -1,38 +1,125 @@
-# med-spa-gemini-live1
+# Med Spa Gemini 3.8 Live Voice Bot
 
-Gemini Live voice bot demo for a med spa. Callers talk to **Lily**, a voice receptionist for Glow Med Spa, straight from the browser.
+Real-time bidirectional voice bot using **Gemini 3.8 Live** WebSocket API.
 
-## Quick start
+## Files
 
-Requires Node.js 18 or newer and a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
+- **server-3.8-live.js** — Express + WebSocket backend
+- **index-3.8-live.html** — Browser frontend (mic capture + audio playback)
+- **package.json** — Node.js dependencies
+- **.env.example** — Configuration template
+
+## Setup (5 minutes)
+
+### 1. **Replace Your Old Files**
+
+In `C:/work/Gemini Voice Bot Demo/` (or your local folder):
+
+```
+OLD                          NEW
+server.js             →      server-3.8-live.js
+index.html            →      index-3.8-live.html
+(keep the same)       →      package.json
+(keep the same)       →      .env.example
+```
+
+### 2. **Create .env File**
+
+Copy `.env.example` and rename to `.env`, then add your API key:
+
+```
+GEMINI_API_KEY=AIza...your_key_here...
+GEMINI_MODEL=gemini-3.8-live
+PORT=3000
+NODE_ENV=development
+```
+
+Get your key from: https://aistudio.google.com/apikey
+
+### 3. **Install Dependencies**
+
+Open terminal in your folder:
 
 ```bash
 npm install
-cp .env.example .env      # then paste your key into GEMINI_API_KEY
+```
+
+### 4. **Run Locally**
+
+```bash
 npm start
 ```
 
-Open http://localhost:3000, tap the mic, allow microphone access, and start talking. Tap again to hang up.
+Then open: **http://localhost:3000**
 
-Use `npm run dev` to restart the server automatically when you edit `server.js`.
+You should see:
+- Purple gradient background
+- "Lily" header
+- "Start Call" button
+- Empty transcript area
 
-## Configuration (`.env`)
+### 5. **Test**
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `GEMINI_API_KEY` | (required) | Your Gemini API key |
-| `GEMINI_MODEL` | `gemini-2.5-flash-native-audio-preview-09-2025` | Live API model |
-| `GEMINI_VOICE` | `Aoede` | Prebuilt voice for Lily |
-| `PORT` | `3000` | Local server port |
+1. Click **"Start Call"**
+2. Allow microphone permission
+3. Say: *"I want to book a facial"*
+4. Lily responds with voice + transcript
+5. Click **"Stop Call"**
 
-## How it works
+## How It Works
 
-- `index.html` captures the mic with an AudioWorklet, converts it to 16 kHz PCM, and streams it over a WebSocket to `/live`. It plays Lily's 24 kHz audio replies and shows a live transcript.
-- `server.js` serves the page and, for each browser connection, opens a Gemini Live session with the `@google/genai` SDK. It forwards audio both ways, so the API key never reaches the browser.
-- Lily's personality, services, hours, and rules live in `SYSTEM_PROMPT` at the top of `server.js`.
+**Browser** → (audio stream) → **Server WebSocket** → (PCM chunks) → **Gemini 3.8 Live** → (audio response) → **Server** → (plays in browser)
+
+- Real-time bidirectional audio
+- ~300ms latency
+- System prompt embedded (Lily's persona)
+- Token tracking for billing
+
+## Pricing
+
+- **Input:** $3.00 per million audio tokens (~$0.005/min)
+- **Output:** $12.00 per million audio tokens (~$0.018/min)
+- **Blended:** ~$1.38/hour (25 tokens/second audio conversion)
+- **Well under $3.50/hr budget** ✅
+
+## Deployment to Render
+
+1. **Push files to GitHub:**
+   - Upload `server-3.8-live.js`
+   - Upload `index-3.8-live.html`
+   - Upload `package.json`
+   - Keep `.env.example` (do NOT commit `.env`)
+
+2. **In Render dashboard:**
+   - Create new Web Service
+   - Connect your GitHub repo
+   - Set environment variables:
+     ```
+     GEMINI_API_KEY=your_key
+     GEMINI_MODEL=gemini-3.8-live
+     PORT=3000
+     NODE_ENV=production
+     ```
+   - Start command: `npm start`
+
+3. **Deploy**
 
 ## Troubleshooting
 
-- **No mic prompt:** browsers only allow the mic on `localhost` or HTTPS.
-- **"Could not connect to Gemini":** check your API key and that `GEMINI_MODEL` is a Live API model available to your key.
-- **Health check:** http://localhost:3000/health returns the model in use.
+**"Cannot find module '@google/genai'"**
+- Run: `npm install`
+
+**"Microphone permission denied"**
+- Check browser settings, allow mic for localhost:3000
+
+**"WebSocket connection error"**
+- Check `.env` has correct `GEMINI_API_KEY`
+- API key must start with "AIza"
+
+**"No audio response"**
+- Check browser console for errors (F12 → Console)
+- Verify Gemini 3.8 Live is available in your region
+
+## Questions?
+
+Check the server logs (terminal) for detailed error messages.
