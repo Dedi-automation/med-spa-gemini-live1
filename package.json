@@ -1,28 +1,21 @@
 {
   "name": "med-spa-gemini-live",
   "version": "1.0.0",
-  "description": "Med Spa Voice Bot using Gemini 3.8 Live WebSocket",
+  "description": "Gemini Live voice receptionist demo for a med spa (Lily)",
   "main": "server.js",
   "type": "module",
+  "private": true,
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node --watch server.js"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18"
   },
-  "keywords": [
-    "voice-bot",
-    "gemini",
-    "websocket",
-    "ai-receptionist"
-  ],
-  "author": "",
-  "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
-    "ws": "^8.14.2",
-    "@google/genai": "^0.0.1",
-    "dotenv": "^16.3.1"
+    "@google/genai": "^2.24.0",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "ws": "^8.22.0"
   }
 }
