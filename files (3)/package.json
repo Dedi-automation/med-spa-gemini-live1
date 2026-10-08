@@ -2,11 +2,11 @@
   "name": "med-spa-gemini-live",
   "version": "1.0.0",
   "description": "Med Spa Voice Bot using Gemini 3.8 Live WebSocket",
-  "main": "server.js",
+  "main": "server-3.8-live.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server-3.8-live.js",
+    "dev": "node server-3.8-live.js"
   },
   "engines": {
     "node": ">=18.0.0"

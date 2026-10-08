@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Med Spa Text Test</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
+    input, button { padding: 10px; font-size: 16px; }
+    #output { border: 1px solid #ccc; padding: 15px; margin-top: 20px; min-height: 100px; white-space: pre-wrap; }
+    .user { color: blue; }
+    .lily { color: green; }
+  </style>
+</head>
+<body>
+  <h1>Med Spa Text Test</h1>
+  <input id="input" type="text" placeholder="Type message to Lily...">
+  <button onclick="send()">Send</button>
+  <div id="output"></div>
+
+  <script>
+    const output = document.getElementById('output');
+    const input = document.getElementById('input');
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    let ws;
+
+    function connect() {
+      ws = new WebSocket(`${proto}://${location.host}/live`);
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'transcript') {
+          const line = msg.role === 'user' ? `<span class="user">You: ${msg.text}</span>` : `<span class="lily">Lily: ${msg.text}</span>`;
+          output.innerHTML += line + '\n';
+          output.scrollTop = output.scrollHeight;
+        }
+        if (msg.type === 'error') {
+          output.innerHTML += `<span style="color:red">ERROR: ${msg.message}</span>\n`;
+        }
+      };
+      ws.onopen = () => output.innerHTML += 'Connected.\n';
+      ws.onclose = () => output.innerHTML += 'Disconnected.\n';
+    }
+
+    function send() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) connect();
+      const text = input.value;
+      if (text) {
+        ws.send(JSON.stringify({ type: 'text', text }));
+        input.value = '';
+      }
+    }
+
+    input.addEventListener('keypress', (e) => { if (e.key === 'Enter') send(); });
+    connect();
+  </script>
+</body>
+</html>
