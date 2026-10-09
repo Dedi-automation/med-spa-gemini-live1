@@ -1,5 +1,5 @@
 // Tests GEMINI_API_KEY from .env without starting the server: `npm run check-key`.
-// Tries it as a Gemini API (AI Studio) key, then as a Vertex AI express-mode key.
+// Lists the models the key can reach, marking the ones that support the Live (voice) API.
 import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
 
@@ -10,20 +10,18 @@ if (!key) {
 }
 console.log(`Key starts with "${key.slice(0, 4)}", length ${key.length}`);
 
-async function tryKey(label, ai) {
-  try {
-    const res = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: 'Say OK' });
-    console.log(`${label}: WORKS (reply: ${res.text?.trim()})`);
-    return true;
-  } catch (err) {
-    console.log(`${label}: failed (${err.status ?? ''} ${String(err.message).slice(0, 160)})`);
-    return false;
+const ai = new GoogleGenAI({ apiKey: key });
+try {
+  const live = [];
+  let total = 0;
+  for await (const m of await ai.models.list()) {
+    total++;
+    if (m.supportedActions?.includes('bidiGenerateContent')) live.push(m.name.replace('models/', ''));
   }
+  console.log(`Key WORKS: ${total} models available.`);
+  console.log(`Live (voice) models: ${live.join(', ') || '(none)'}`);
+  console.log(`GEMINI_MODEL in .env: ${process.env.GEMINI_MODEL || '(not set, server uses its default)'}`);
+} catch (err) {
+  console.log(`Key failed: ${err.status ?? ''} ${String(err.message).slice(0, 200)}`);
+  console.log('Create a new key at https://aistudio.google.com/apikey');
 }
-
-const studio = await tryKey('Gemini API (AI Studio) key', new GoogleGenAI({ apiKey: key }));
-const vertex = await tryKey('Vertex AI express key', new GoogleGenAI({ vertexai: true, apiKey: key }));
-
-if (studio) console.log('\nThis key works with the app as is.');
-else if (vertex) console.log('\nThis is a Vertex AI key. The app needs a Gemini API key from https://aistudio.google.com/apikey');
-else console.log('\nThe key did not work either way. Create a new one at https://aistudio.google.com/apikey');
