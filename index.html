@@ -93,6 +93,7 @@
 
     const INPUT_RATE = 16000;   // Gemini expects 16 kHz PCM16 in
     const OUTPUT_RATE = 24000;  // Gemini returns 24 kHz PCM16 out
+    const ECHO_TAIL_S = 0.4;    // keep the mic muted this long after Lily stops
 
     let ws, micStream, captureCtx, workletNode, playCtx;
     let playHead = 0;
@@ -223,7 +224,12 @@
       const source = captureCtx.createMediaStreamSource(micStream);
       workletNode = new AudioWorkletNode(captureCtx, 'pcm-capture');
       workletNode.port.onmessage = (e) => {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(e.data);
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        // While Lily is speaking (plus a short tail), send silence instead of the mic.
+        // Otherwise speakers leak her voice back into the mic, Gemini hears itself,
+        // and she echoes or repeats herself.
+        const lilySpeaking = playCtx && playCtx.currentTime < playHead + ECHO_TAIL_S;
+        ws.send(lilySpeaking ? new ArrayBuffer(e.data.byteLength) : e.data);
       };
       source.connect(workletNode);
 
